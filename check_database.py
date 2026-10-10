@@ -1,10 +1,17 @@
 from sqlalchemy import text
 
-from app.database import SessionLocal
+from app.database import engine
 
 
-with SessionLocal() as db:
-    result = db.execute(text("SELECT 1")).scalar_one()
+with engine.connect() as connection:
+    database_name = connection.execute(
+        text("SELECT current_database()")
+    ).scalar_one()
+
+    database_user = connection.execute(
+        text("SELECT current_user")
+    ).scalar_one()
 
     print("Database connection successful!")
-    print("Result:", result)
+    print("Database:", database_name)
+    print("User:", database_user)
