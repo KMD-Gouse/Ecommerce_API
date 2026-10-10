@@ -1,7 +1,6 @@
-
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -32,33 +31,46 @@ def to_order_response(order: Order) -> OrderResponse:
 
 
 # CREATE
-@router.post("", response_model=OrderResult)
+@router.post(
+    "",
+    response_model=OrderResult,
+    status_code=201,
+)
 def create_order(
     order_data: CreateOrder,
     db: Annotated[Session, Depends(get_db)],
 ):
     with db.begin():
-        # Check the user.
+        # Check whether the user exists.
         statement = select(User).where(
             User.id == order_data.user_id
         )
         user = db.scalars(statement).one_or_none()
 
         if user is None:
-            return {"message": "User not found"}
+            raise HTTPException(
+                status_code=404,
+                detail="User not found",
+            )
 
-        # Check the product.
+        # Check whether the product exists.
         statement = select(Product).where(
             Product.id == order_data.product_id
         )
         product = db.scalars(statement).one_or_none()
 
         if product is None:
-            return {"message": "Product not found"}
+            raise HTTPException(
+                status_code=404,
+                detail="Product not found",
+            )
 
-        # Check stock before changing anything.
+        # Check available stock.
         if product.stock < order_data.quantity:
-            return {"message": "Not enough stock"}
+            raise HTTPException(
+                status_code=409,
+                detail="Not enough stock",
+            )
 
         new_order = Order(
             user_id=user.id,
@@ -67,14 +79,15 @@ def create_order(
         )
 
         db.add(new_order)
-        product.stock = product.stock - order_data.quantity
+        product.stock -= order_data.quantity
 
-        # Send changes to the database, without committing yet.
+        # Write pending changes without committing.
+        # This also gives new_order its generated ID.
         db.flush()
 
         result = to_order_response(new_order)
 
-    # The transaction has committed before this return.
+    # Successful exit from db.begin() commits the transaction.
     return {
         "message": "Order created successfully",
         "order": result,
@@ -89,25 +102,28 @@ def get_orders(
     statement = select(Order).order_by(Order.id)
     orders = db.scalars(statement).all()
 
-    response = []
-
-    for order in orders:
-        response.append(to_order_response(order))
-
-    return response
+    return [
+        to_order_response(order)
+        for order in orders
+    ]
 
 
 # READ ONE
-@router.get("/{order_id}", response_model=OrderResponse | None)
+@router.get("/{order_id}", response_model=OrderResponse)
 def get_order(
     order_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    statement = select(Order).where(Order.id == order_id)
+    statement = select(Order).where(
+        Order.id == order_id
+    )
     order = db.scalars(statement).one_or_none()
 
     if order is None:
-        return None
+        raise HTTPException(
+            status_code=404,
+            detail="Order not found",
+        )
 
     return to_order_response(order)
 
@@ -120,26 +136,39 @@ def update_order(
     db: Annotated[Session, Depends(get_db)],
 ):
     with db.begin():
-        statement = select(Order).where(Order.id == order_id)
+        # Find the existing order.
+        statement = select(Order).where(
+            Order.id == order_id
+        )
         order = db.scalars(statement).one_or_none()
 
         if order is None:
-            return {"message": "Order not found"}
+            raise HTTPException(
+                status_code=404,
+                detail="Order not found",
+            )
 
+        # Find the product associated with the order.
         statement = select(Product).where(
             Product.id == order.product_id
         )
         product = db.scalars(statement).one_or_none()
 
         if product is None:
-            return {"message": "Order's product not found"}
+            raise HTTPException(
+                status_code=404,
+                detail="Order's product not found",
+            )
 
         difference = order_update.quantity - order.quantity
 
         if difference > product.stock:
-            return {"message": "Not enough stock"}
+            raise HTTPException(
+                status_code=409,
+                detail="Not enough stock",
+            )
 
-        product.stock = product.stock - difference
+        product.stock -= difference
         order.quantity = order_update.quantity
 
         result = to_order_response(order)
@@ -157,21 +186,31 @@ def delete_order(
     db: Annotated[Session, Depends(get_db)],
 ):
     with db.begin():
-        statement = select(Order).where(Order.id == order_id)
+        # Find the order.
+        statement = select(Order).where(
+            Order.id == order_id
+        )
         order = db.scalars(statement).one_or_none()
 
         if order is None:
-            return {"message": "Order not found"}
+            raise HTTPException(
+                status_code=404,
+                detail="Order not found",
+            )
 
+        # Find its product so stock can be restored.
         statement = select(Product).where(
             Product.id == order.product_id
         )
         product = db.scalars(statement).one_or_none()
 
         if product is None:
-            return {"message": "Order's product not found"}
+            raise HTTPException(
+                status_code=404,
+                detail="Order's product not found",
+            )
 
-        product.stock = product.stock + order.quantity
+        product.stock += order.quantity
 
         db.delete(order)
 

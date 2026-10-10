@@ -1,18 +1,16 @@
-
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Product
+from app.models import Order, Product
 from app.schemas.products import (
     CreateProduct,
     ResponseProduct,
     UpdateProduct,
 )
-
 
 router = APIRouter(
     prefix="/products",
@@ -33,8 +31,12 @@ def create_product(
     )
 
     db.add(new_product)
+    db.add(new_product)
     db.commit()
     db.refresh(new_product)
+
+    
+
 
     return {
         "id": new_product.id,
@@ -66,7 +68,7 @@ def get_products(
 
 
 # READ ONE
-@router.get("/{product_id}", response_model=ResponseProduct | None)
+@router.get("/{product_id}", response_model=ResponseProduct )
 def get_product(
     product_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
@@ -75,7 +77,10 @@ def get_product(
     product = db.scalars(statement).one_or_none()
 
     if product is None:
-        return None
+        raise HTTPException(
+        status_code=404,
+        detail="Product not found",
+    )
 
     return {
         "id": product.id,
@@ -86,7 +91,7 @@ def get_product(
 
 
 # UPDATE
-@router.patch("/{product_id}", response_model=ResponseProduct | None)
+@router.patch("/{product_id}", response_model=ResponseProduct )
 def update_product(
     product_id: Annotated[int, Path(gt=0)],
     product_update: UpdateProduct,
@@ -96,7 +101,10 @@ def update_product(
     product = db.scalars(statement).one_or_none()
 
     if product is None:
-        return None
+         raise HTTPException(
+        status_code=404,
+        detail="Product not found",
+    )
 
     changes = product_update.model_dump(
         exclude_unset=True,
@@ -124,16 +132,37 @@ def update_product(
 
 
 # DELETE
+# DELETE
 @router.delete("/{product_id}")
 def delete_product(
     product_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    statement = select(Product).where(Product.id == product_id)
+    statement = select(Product).where(
+        Product.id == product_id
+    )
+
     product = db.scalars(statement).one_or_none()
 
+    # The requested product must exist.
     if product is None:
-        return {"message": "Product not found"}
+        raise HTTPException(
+            status_code=404,
+            detail="Product not found",
+        )
+
+    # Check whether an order references this product.
+    existing_order_id = db.scalar(
+        select(Order.id)
+        .where(Order.product_id == product_id)
+        .limit(1)
+    )
+
+    if existing_order_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete a product with existing orders",
+        )
 
     db.delete(product)
     db.commit()

@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 pydantic[email]>=2,<3
 sqlalchemy>=2.0,<2.1
+pwdlib[argon2]
