@@ -1,4 +1,8 @@
 from pydantic import BaseModel, EmailStr, Field
+from datetime import datetime
+from typing import Literal
+
+from pydantic import ConfigDict
 
 
 class CreateUser(BaseModel):
@@ -20,3 +24,10 @@ class UserResponse(BaseModel):
     id: int
     name: str
     email: EmailStr
+
+class UserProfileResponse(UserResponse):
+    role: Literal["customer", "admin"]
+    is_active: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

@@ -7,3 +7,5 @@ pwdlib[argon2]
 psycopg[binary]>=3,<4
 pydantic-settings>=2,<3
 alembic>=1,<2
+PyJWT>=2.10,<3
+python-multipart

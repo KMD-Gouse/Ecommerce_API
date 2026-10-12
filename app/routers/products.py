@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import require_admin
 from app.models import Order, Product
 from app.schemas.products import (
     CreateProduct,
@@ -12,14 +13,20 @@ from app.schemas.products import (
     UpdateProduct,
 )
 
+
 router = APIRouter(
     prefix="/products",
     tags=["Products"],
 )
 
 
-# CREATE
-@router.post("", response_model=ResponseProduct, status_code=201)
+# CREATE — admin only
+@router.post(
+    "",
+    response_model=ResponseProduct,
+    status_code=201,
+    dependencies=[Depends(require_admin)],
+)
 def create_product(
     product: CreateProduct,
     db: Annotated[Session, Depends(get_db)],
@@ -31,12 +38,8 @@ def create_product(
     )
 
     db.add(new_product)
-    db.add(new_product)
     db.commit()
     db.refresh(new_product)
-
-    
-
 
     return {
         "id": new_product.id,
@@ -46,7 +49,7 @@ def create_product(
     }
 
 
-# READ ALL
+# READ ALL — public
 @router.get("", response_model=list[ResponseProduct])
 def get_products(
     db: Annotated[Session, Depends(get_db)],
@@ -54,33 +57,33 @@ def get_products(
     statement = select(Product).order_by(Product.id)
     products = db.scalars(statement).all()
 
-    response = []
-
-    for product in products:
-        response.append({
+    return [
+        {
             "id": product.id,
             "name": product.name,
             "price": product.price,
             "stock": product.stock,
-        })
+        }
+        for product in products
+    ]
 
-    return response
 
-
-# READ ONE
-@router.get("/{product_id}", response_model=ResponseProduct )
+# READ ONE — public
+@router.get("/{product_id}", response_model=ResponseProduct)
 def get_product(
     product_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    statement = select(Product).where(Product.id == product_id)
+    statement = select(Product).where(
+        Product.id == product_id
+    )
     product = db.scalars(statement).one_or_none()
 
     if product is None:
         raise HTTPException(
-        status_code=404,
-        detail="Product not found",
-    )
+            status_code=404,
+            detail="Product not found",
+        )
 
     return {
         "id": product.id,
@@ -90,21 +93,27 @@ def get_product(
     }
 
 
-# UPDATE
-@router.patch("/{product_id}", response_model=ResponseProduct )
+# UPDATE — admin only
+@router.patch(
+    "/{product_id}",
+    response_model=ResponseProduct,
+    dependencies=[Depends(require_admin)],
+)
 def update_product(
     product_id: Annotated[int, Path(gt=0)],
     product_update: UpdateProduct,
     db: Annotated[Session, Depends(get_db)],
 ):
-    statement = select(Product).where(Product.id == product_id)
+    statement = select(Product).where(
+        Product.id == product_id
+    )
     product = db.scalars(statement).one_or_none()
 
     if product is None:
-         raise HTTPException(
-        status_code=404,
-        detail="Product not found",
-    )
+        raise HTTPException(
+            status_code=404,
+            detail="Product not found",
+        )
 
     changes = product_update.model_dump(
         exclude_unset=True,
@@ -131,9 +140,11 @@ def update_product(
     }
 
 
-# DELETE
-# DELETE
-@router.delete("/{product_id}")
+# DELETE — admin only
+@router.delete(
+    "/{product_id}",
+    dependencies=[Depends(require_admin)],
+)
 def delete_product(
     product_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
@@ -141,17 +152,14 @@ def delete_product(
     statement = select(Product).where(
         Product.id == product_id
     )
-
     product = db.scalars(statement).one_or_none()
 
-    # The requested product must exist.
     if product is None:
         raise HTTPException(
             status_code=404,
             detail="Product not found",
         )
 
-    # Check whether an order references this product.
     existing_order_id = db.scalar(
         select(Order.id)
         .where(Order.product_id == product_id)

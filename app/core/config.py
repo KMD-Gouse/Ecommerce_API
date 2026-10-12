@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     database_name: str
     database_user: str
     database_password: SecretStr
+    jwt_secret_key: SecretStr = Field(min_length=32)
+
+    access_token_expire_minutes: int = Field(
+    default=30,
+    gt=0,
+)
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

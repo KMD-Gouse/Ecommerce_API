@@ -18,9 +18,10 @@ def create_user(client):
     return data
 
 
-def create_product(client, stock=2):
+def create_product(client, admin_headers, stock=2):
     response = client.post(
         "/products",
+        headers=admin_headers,
         json={
             "name": "Wireless Mouse",
             "price": "499.00",
@@ -34,9 +35,10 @@ def create_product(client, stock=2):
 
 
 # 1. A product must have a price.
-def test_product_requires_price(client):
+def test_product_requires_price(client, admin_headers):
     response = client.post(
         "/products",
+        headers=admin_headers,
         json={
             "name": "Wireless Mouse",
             "stock": 2,
@@ -47,9 +49,10 @@ def test_product_requires_price(client):
 
 
 # 2. Stock cannot be negative.
-def test_negative_stock_is_rejected(client):
+def test_negative_stock_is_rejected(client, admin_headers):
     response = client.post(
         "/products",
+        headers=admin_headers,
         json={
             "name": "Wireless Mouse",
             "price": "499.00",
@@ -60,7 +63,12 @@ def test_negative_stock_is_rejected(client):
     assert response.status_code == 422, response.text
 
 
+
+    assert response.status_code == 422, response.text
+
+
 # 3. A nonexistent product should return 404.
+
 def test_missing_product_returns_404(client):
     response = client.get("/products/999")
 
@@ -90,9 +98,9 @@ def test_duplicate_email_returns_409(client):
 
 
 # 5. Creating an order should reduce stock.
-def test_order_creation_reduces_stock(client):
+def test_order_creation_reduces_stock(client, admin_headers,stock=2):
     user = create_user(client)
-    product = create_product(client, stock=2)
+    product = create_product(client, admin_headers, stock=2)
 
     response = client.post(
         "/orders",
@@ -119,9 +127,9 @@ def test_order_creation_reduces_stock(client):
 
 
 # 6. Insufficient stock must not create an order.
-def test_insufficient_stock_leaves_data_unchanged(client):
+def test_insufficient_stock_leaves_data_unchanged(client, admin_headers):
     user = create_user(client)
-    product = create_product(client, stock=1)
+    product = create_product(client, admin_headers, stock=1)
 
     response = client.post(
         "/orders",
@@ -148,9 +156,10 @@ def test_insufficient_stock_leaves_data_unchanged(client):
 
 
 # 7. Cancelling twice must not restore stock twice.
-def test_order_cancellation_restores_stock(client):
+
+def test_order_cancellation_restores_stock(client, admin_headers):
     user = create_user(client)
-    product = create_product(client, stock=2)
+    product = create_product(client, admin_headers, stock=2)
 
     response = client.post(
         "/orders",
@@ -161,6 +170,7 @@ def test_order_cancellation_restores_stock(client):
         },
     )
 
+    # Keep the rest of your test below.
     assert response.status_code == 201, response.text
 
     order_id = response.json()["order"]["id"]
@@ -190,10 +200,9 @@ def test_order_cancellation_restores_stock(client):
 
 
 # 8. A product referenced by an order cannot be deleted.
-def test_product_with_order_cannot_be_deleted(client):
+def test_product_with_order_cannot_be_deleted(client, admin_headers):
     user = create_user(client)
-    product = create_product(client)
-
+    product = create_product(client, admin_headers)
     response = client.post(
         "/orders",
         json={
@@ -205,9 +214,11 @@ def test_product_with_order_cannot_be_deleted(client):
 
     assert response.status_code == 201, response.text
 
+   
     response = client.delete(
-        f"/products/{product['id']}"
-    )
+    f"/products/{product['id']}",
+    headers=admin_headers,
+)
 
     assert response.status_code == 409, response.text
 

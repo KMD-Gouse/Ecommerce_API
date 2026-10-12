@@ -9,12 +9,18 @@ from app.database import get_db
 from app.models import Order, User
 from app.schemas.users import CreateUser, UpdateUser, UserResponse
 from app.security import hash_password
-
+from app.dependencies import get_current_user
+from app.schemas.users import UserProfileResponse
 
 router = APIRouter(
     prefix="/users",
     tags=["Users"],
 )
+@router.get("/me", response_model=UserProfileResponse)
+def get_my_profile(
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    return current_user
 
 
 # READ ALL

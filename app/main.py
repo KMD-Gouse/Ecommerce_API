@@ -1,10 +1,11 @@
 
 from fastapi import FastAPI
 
-from app.routers import orders, products, users
+from app.routers import orders, products, users,auth
 
 
 app = FastAPI(title="Mini E-Commerce API")
+app.include_router(auth.router)
 
 
 app.include_router(users.router)
