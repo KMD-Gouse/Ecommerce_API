@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import require_admin
-from app.models import Order, Product
+from app.models import Order, Product,Category
 from app.schemas.products import (
     CreateProduct,
     ResponseProduct,
@@ -31,10 +31,20 @@ def create_product(
     product: CreateProduct,
     db: Annotated[Session, Depends(get_db)],
 ):
+    if product.category_id is not None:
+        category = db.get(Category, product.category_id)
+
+        if category is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Category not found",
+            )
+
     new_product = Product(
         name=product.name,
         price=product.price,
         stock=product.stock,
+        category_id=product.category_id,
     )
 
     db.add(new_product)
@@ -46,6 +56,7 @@ def create_product(
         "name": new_product.name,
         "price": new_product.price,
         "stock": new_product.stock,
+        "category_id": new_product.category_id,
     }
 
 
@@ -63,6 +74,7 @@ def get_products(
             "name": product.name,
             "price": product.price,
             "stock": product.stock,
+            "category_id": product.category_id,
         }
         for product in products
     ]
@@ -89,7 +101,8 @@ def get_product(
         "id": product.id,
         "name": product.name,
         "price": product.price,
-        "stock": product.stock,
+        "stock": product.stock,   
+        "category_id": product.category_id,
     }
 
 
@@ -104,10 +117,7 @@ def update_product(
     product_update: UpdateProduct,
     db: Annotated[Session, Depends(get_db)],
 ):
-    statement = select(Product).where(
-        Product.id == product_id
-    )
-    product = db.scalars(statement).one_or_none()
+    product = db.get(Product, product_id)
 
     if product is None:
         raise HTTPException(
@@ -117,8 +127,28 @@ def update_product(
 
     changes = product_update.model_dump(
         exclude_unset=True,
-        exclude_none=True,
     )
+
+    # These database columns cannot contain NULL.
+    for field in ("name", "price", "stock"):
+        if field in changes and changes[field] is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{field} cannot be null",
+            )
+
+    # Validate before changing any product attributes.
+    if "category_id" in changes:
+        category_id = changes["category_id"]
+
+        if category_id is not None:
+            category = db.get(Category, category_id)
+
+            if category is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Category not found",
+                )
 
     if "name" in changes:
         product.name = changes["name"]
@@ -129,6 +159,9 @@ def update_product(
     if "stock" in changes:
         product.stock = changes["stock"]
 
+    if "category_id" in changes:
+        product.category_id = changes["category_id"]
+
     db.commit()
     db.refresh(product)
 
@@ -137,6 +170,7 @@ def update_product(
         "name": product.name,
         "price": product.price,
         "stock": product.stock,
+        "category_id": product.category_id,
     }
 
 
