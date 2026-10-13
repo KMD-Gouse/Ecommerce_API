@@ -1,10 +1,10 @@
 # app/schemas/order.py
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CreateOrder(BaseModel):
-    user_id: int = Field(gt=0)
+    model_config = ConfigDict(extra="forbid")
     product_id: int = Field(gt=0)
     quantity: int = Field(gt=0)
 

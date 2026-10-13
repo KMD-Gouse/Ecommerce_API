@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import get_current_user
 from app.models import Order, Product, User
 from app.schemas.orders import (
     CreateOrder,
@@ -30,6 +31,12 @@ def to_order_response(order: Order) -> OrderResponse:
     )
 
 
+def check_order_access(order: Order, current_user: User) -> None:
+    if order.user_id != current_user.id and current_user.role != "admin":
+        # Do not reveal whether another customer's order exists.
+        raise HTTPException(status_code=404, detail="Order not found")
+
+
 # CREATE
 @router.post(
     "",
@@ -39,20 +46,9 @@ def to_order_response(order: Order) -> OrderResponse:
 def create_order(
     order_data: CreateOrder,
     db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
-    with db.begin():
-        # Check whether the user exists.
-        statement = select(User).where(
-            User.id == order_data.user_id
-        )
-        user = db.scalars(statement).one_or_none()
-
-        if user is None:
-            raise HTTPException(
-                status_code=404,
-                detail="User not found",
-            )
-
+    try:
         # Check whether the product exists.
         statement = select(Product).where(
             Product.id == order_data.product_id
@@ -73,7 +69,7 @@ def create_order(
             )
 
         new_order = Order(
-            user_id=user.id,
+            user_id=current_user.id,
             product_id=product.id,
             quantity=order_data.quantity,
         )
@@ -87,7 +83,11 @@ def create_order(
 
         result = to_order_response(new_order)
 
-    # Successful exit from db.begin() commits the transaction.
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
     return {
         "message": "Order created successfully",
         "order": result,
@@ -98,8 +98,11 @@ def create_order(
 @router.get("", response_model=list[OrderResponse])
 def get_orders(
     db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
     statement = select(Order).order_by(Order.id)
+    if current_user.role != "admin":
+        statement = statement.where(Order.user_id == current_user.id)
     orders = db.scalars(statement).all()
 
     return [
@@ -113,6 +116,7 @@ def get_orders(
 def get_order(
     order_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
     statement = select(Order).where(
         Order.id == order_id
@@ -125,6 +129,7 @@ def get_order(
             detail="Order not found",
         )
 
+    check_order_access(order, current_user)
     return to_order_response(order)
 
 
@@ -134,8 +139,9 @@ def update_order(
     order_id: Annotated[int, Path(gt=0)],
     order_update: UpdateOrder,
     db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
-    with db.begin():
+    try:
         # Find the existing order.
         statement = select(Order).where(
             Order.id == order_id
@@ -147,6 +153,8 @@ def update_order(
                 status_code=404,
                 detail="Order not found",
             )
+
+        check_order_access(order, current_user)
 
         # Find the product associated with the order.
         statement = select(Product).where(
@@ -172,6 +180,10 @@ def update_order(
         order.quantity = order_update.quantity
 
         result = to_order_response(order)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {
         "message": "Order updated successfully",
@@ -184,8 +196,9 @@ def update_order(
 def delete_order(
     order_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
-    with db.begin():
+    try:
         # Find the order.
         statement = select(Order).where(
             Order.id == order_id
@@ -197,6 +210,8 @@ def delete_order(
                 status_code=404,
                 detail="Order not found",
             )
+
+        check_order_access(order, current_user)
 
         # Find its product so stock can be restored.
         statement = select(Product).where(
@@ -213,6 +228,10 @@ def delete_order(
         product.stock += order.quantity
 
         db.delete(order)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {
         "message": "Order cancelled and stock restored",

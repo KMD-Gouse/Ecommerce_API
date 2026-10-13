@@ -1,3 +1,14 @@
+import os
+
+# Set before application imports. Actual database access is overridden below.
+os.environ.update({
+    "DATABASE_HOST": "localhost",
+    "DATABASE_NAME": "phase3_test",
+    "DATABASE_USER": "phase3_test",
+    "DATABASE_PASSWORD": "test-only",
+    "JWT_SECRET_KEY": "test-only-secret-key-at-least-32-characters",
+})
+
 import pytest
 
 from fastapi.testclient import TestClient

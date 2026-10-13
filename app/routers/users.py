@@ -9,7 +9,7 @@ from app.database import get_db
 from app.models import Order, User
 from app.schemas.users import CreateUser, UpdateUser, UserResponse
 from app.security import hash_password
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin
 from app.schemas.users import UserProfileResponse
 
 router = APIRouter(
@@ -24,7 +24,7 @@ def get_my_profile(
 
 
 # READ ALL
-@router.get("", response_model=list[UserResponse])
+@router.get("", response_model=list[UserResponse], dependencies=[Depends(require_admin)])
 def get_users(
     db: Annotated[Session, Depends(get_db)],
 ):
@@ -80,7 +80,12 @@ def update_user(
     user_id: Annotated[int, Path(gt=0)],
     user_update: UpdateUser,
     db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    # Check authorization before looking up another account.
+    if current_user.id != user_id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
     statement = select(User).where(User.id == user_id)
     user = db.scalars(statement).one_or_none()
 
@@ -125,7 +130,12 @@ def update_user(
 def get_user(
     user_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    # Check authorization before looking up another account.
+    if current_user.id != user_id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
     statement = select(User).where(User.id == user_id)
     user = db.scalars(statement).one_or_none()
 
@@ -147,7 +157,12 @@ def get_user(
 def delete_user(
     user_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    # Check authorization before looking up another account.
+    if current_user.id != user_id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
     statement = select(User).where(User.id == user_id)
     user = db.scalars(statement).one_or_none()
 

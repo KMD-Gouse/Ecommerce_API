@@ -77,7 +77,7 @@ def test_missing_product_returns_404(client):
 
 
 # 4. Two users cannot register with the same email.
-def test_duplicate_email_returns_409(client):
+def test_duplicate_email_returns_409(client, admin_headers):
     create_user(client)
 
     response = client.post(
@@ -91,10 +91,10 @@ def test_duplicate_email_returns_409(client):
 
     assert response.status_code == 409, response.text
 
-    users_response = client.get("/users")
+    users_response = client.get("/users", headers=admin_headers)
 
     assert users_response.status_code == 200
-    assert len(users_response.json()) == 1
+    assert len(users_response.json()) == 2
 
 
 # 5. Creating an order should reduce stock.
@@ -104,8 +104,8 @@ def test_order_creation_reduces_stock(client, admin_headers,stock=2):
 
     response = client.post(
         "/orders",
+        headers=admin_headers,
         json={
-            "user_id": user["id"],
             "product_id": product["id"],
             "quantity": 1,
         },
@@ -120,7 +120,7 @@ def test_order_creation_reduces_stock(client, admin_headers,stock=2):
     assert product_response.status_code == 200
     assert product_response.json()["stock"] == 1
 
-    orders_response = client.get("/orders")
+    orders_response = client.get("/orders", headers=admin_headers)
 
     assert orders_response.status_code == 200
     assert len(orders_response.json()) == 1
@@ -133,8 +133,8 @@ def test_insufficient_stock_leaves_data_unchanged(client, admin_headers):
 
     response = client.post(
         "/orders",
+        headers=admin_headers,
         json={
-            "user_id": user["id"],
             "product_id": product["id"],
             "quantity": 2,
         },
@@ -149,7 +149,7 @@ def test_insufficient_stock_leaves_data_unchanged(client, admin_headers):
     assert product_response.status_code == 200
     assert product_response.json()["stock"] == 1
 
-    orders_response = client.get("/orders")
+    orders_response = client.get("/orders", headers=admin_headers)
 
     assert orders_response.status_code == 200
     assert orders_response.json() == []
@@ -163,8 +163,8 @@ def test_order_cancellation_restores_stock(client, admin_headers):
 
     response = client.post(
         "/orders",
+        headers=admin_headers,
         json={
-            "user_id": user["id"],
             "product_id": product["id"],
             "quantity": 1,
         },
@@ -175,7 +175,7 @@ def test_order_cancellation_restores_stock(client, admin_headers):
 
     order_id = response.json()["order"]["id"]
 
-    response = client.delete(f"/orders/{order_id}")
+    response = client.delete(f"/orders/{order_id}", headers=admin_headers)
 
     assert response.status_code == 200, response.text
 
@@ -187,7 +187,7 @@ def test_order_cancellation_restores_stock(client, admin_headers):
     assert product_response.json()["stock"] == 2
 
     # Try cancelling the same order again.
-    response = client.delete(f"/orders/{order_id}")
+    response = client.delete(f"/orders/{order_id}", headers=admin_headers)
 
     assert response.status_code == 404, response.text
 
@@ -205,8 +205,8 @@ def test_product_with_order_cannot_be_deleted(client, admin_headers):
     product = create_product(client, admin_headers)
     response = client.post(
         "/orders",
+        headers=admin_headers,
         json={
-            "user_id": user["id"],
             "product_id": product["id"],
             "quantity": 1,
         },
