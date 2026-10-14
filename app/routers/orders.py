@@ -1,17 +1,18 @@
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models import Order, Product, User
+from app.models import Order, OrderItem, Product, User
 from app.schemas.orders import (
     CreateOrder,
     OrderResponse,
     OrderResult,
-    UpdateOrder,
 )
 
 
@@ -21,23 +22,39 @@ router = APIRouter(
 )
 
 
-# Convert a database object into a response schema.
-def to_order_response(order: Order) -> OrderResponse:
-    return OrderResponse(
-        id=order.id,
-        user_id=order.user_id,
-        product_id=order.product_id,
-        quantity=order.quantity,
+def find_order(
+    db: Session,
+    order_id: int,
+    current_user: User,
+    *,
+    lock: bool = False,
+) -> Order:
+    statement = (
+        select(Order)
+        .where(Order.id == order_id)
+        .options(selectinload(Order.items))
     )
 
+    if current_user.role != "admin":
+        statement = statement.where(
+            Order.user_id == current_user.id
+        )
 
-def check_order_access(order: Order, current_user: User) -> None:
-    if order.user_id != current_user.id and current_user.role != "admin":
-        # Do not reveal whether another customer's order exists.
-        raise HTTPException(status_code=404, detail="Order not found")
+    if lock:
+        statement = statement.with_for_update()
+
+    order = db.scalars(statement).one_or_none()
+
+    if order is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Order not found",
+        )
+
+    return order
 
 
-# CREATE
+# CREATE — authenticated user
 @router.post(
     "",
     response_model=OrderResult,
@@ -49,190 +66,204 @@ def create_order(
     current_user: Annotated[User, Depends(get_current_user)],
 ):
     try:
-        # Check whether the product exists.
-        statement = select(Product).where(
-            Product.id == order_data.product_id
+        product_ids = [
+            item.product_id
+            for item in order_data.items
+        ]
+
+        if len(product_ids) != len(set(product_ids)):
+            raise HTTPException(
+                status_code=422,
+                detail="Each product must appear only once",
+            )
+
+        statement = (
+            select(Product)
+            .where(Product.id.in_(product_ids))
+            .order_by(Product.id)
+            .with_for_update()
         )
-        product = db.scalars(statement).one_or_none()
 
-        if product is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Product not found",
-            )
+        products = db.scalars(statement).all()
 
-        # Check available stock.
-        if product.stock < order_data.quantity:
-            raise HTTPException(
-                status_code=409,
-                detail="Not enough stock",
-            )
+        products_by_id = {
+            product.id: product
+            for product in products
+        }
 
-        new_order = Order(
+        # Validate every requested item before changing stock.
+        for item_data in order_data.items:
+            product = products_by_id.get(item_data.product_id)
+
+            if product is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Product {item_data.product_id} not found",
+                )
+
+            if product.stock < item_data.quantity:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Not enough stock for product {product.id}",
+                )
+
+        total_amount = sum(
+            (
+                products_by_id[item.product_id].price
+                * item.quantity
+                for item in order_data.items
+            ),
+            Decimal("0.00"),
+        )
+
+        order = Order(
             user_id=current_user.id,
-            product_id=product.id,
-            quantity=order_data.quantity,
+            status="placed",
+            total_amount=total_amount,
         )
 
-        db.add(new_order)
-        product.stock -= order_data.quantity
+        for item_data in order_data.items:
+            product = products_by_id[item_data.product_id]
 
-        # Write pending changes without committing.
-        # This also gives new_order its generated ID.
+            order.items.append(
+                OrderItem(
+                    product_id=product.id,
+                    quantity=item_data.quantity,
+                    unit_price=product.price,
+                )
+            )
+
+            product.stock -= item_data.quantity
+
+        db.add(order)
         db.flush()
 
-        result = to_order_response(new_order)
+        result = OrderResponse.model_validate(order)
 
         db.commit()
+
     except Exception:
         db.rollback()
         raise
 
-    return {
-        "message": "Order created successfully",
-        "order": result,
-    }
+    return OrderResult(
+        message="Order created successfully",
+        order=result,
+    )
 
 
-# READ ALL
-@router.get("", response_model=list[OrderResponse])
+# READ ALL — customers see their own; admins see all
+@router.get(
+    "",
+    response_model=list[OrderResponse],
+)
 def get_orders(
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ):
-    statement = select(Order).order_by(Order.id)
-    if current_user.role != "admin":
-        statement = statement.where(Order.user_id == current_user.id)
-    orders = db.scalars(statement).all()
+    statement = (
+        select(Order)
+        .options(selectinload(Order.items))
+        .order_by(Order.id.desc())
+        .offset(offset)
+        .limit(limit)
+    )
 
-    return [
-        to_order_response(order)
-        for order in orders
-    ]
+    if current_user.role != "admin":
+        statement = statement.where(
+            Order.user_id == current_user.id
+        )
+
+    return db.scalars(statement).all()
 
 
 # READ ONE
-@router.get("/{order_id}", response_model=OrderResponse)
+@router.get(
+    "/{order_id}",
+    response_model=OrderResponse,
+)
 def get_order(
     order_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
-    statement = select(Order).where(
-        Order.id == order_id
+    return find_order(
+        db,
+        order_id,
+        current_user,
     )
-    order = db.scalars(statement).one_or_none()
-
-    if order is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Order not found",
-        )
-
-    check_order_access(order, current_user)
-    return to_order_response(order)
 
 
-# UPDATE QUANTITY
-@router.patch("/{order_id}", response_model=OrderResult)
-def update_order(
-    order_id: Annotated[int, Path(gt=0)],
-    order_update: UpdateOrder,
-    db: Annotated[Session, Depends(get_db)],
-    current_user: Annotated[User, Depends(get_current_user)],
-):
-    try:
-        # Find the existing order.
-        statement = select(Order).where(
-            Order.id == order_id
-        )
-        order = db.scalars(statement).one_or_none()
-
-        if order is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Order not found",
-            )
-
-        check_order_access(order, current_user)
-
-        # Find the product associated with the order.
-        statement = select(Product).where(
-            Product.id == order.product_id
-        )
-        product = db.scalars(statement).one_or_none()
-
-        if product is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Order's product not found",
-            )
-
-        difference = order_update.quantity - order.quantity
-
-        if difference > product.stock:
-            raise HTTPException(
-                status_code=409,
-                detail="Not enough stock",
-            )
-
-        product.stock -= difference
-        order.quantity = order_update.quantity
-
-        result = to_order_response(order)
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-
-    return {
-        "message": "Order updated successfully",
-        "order": result,
-    }
-
-
-# DELETE / CANCEL
-@router.delete("/{order_id}", response_model=OrderResult)
-def delete_order(
+# CANCEL — preserve the order and restore stock once
+@router.post(
+    "/{order_id}/cancel",
+    response_model=OrderResult,
+)
+def cancel_order(
     order_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
     try:
-        # Find the order.
-        statement = select(Order).where(
-            Order.id == order_id
+        order = find_order(
+            db,
+            order_id,
+            current_user,
+            lock=True,
         )
-        order = db.scalars(statement).one_or_none()
 
-        if order is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Order not found",
+        if order.status == "placed":
+            if not order.items:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Order has no items",
+                )
+
+            product_ids = [
+                item.product_id
+                for item in order.items
+            ]
+
+            statement = (
+                select(Product)
+                .where(Product.id.in_(product_ids))
+                .order_by(Product.id)
+                .with_for_update()
             )
 
-        check_order_access(order, current_user)
+            products = db.scalars(statement).all()
 
-        # Find its product so stock can be restored.
-        statement = select(Product).where(
-            Product.id == order.product_id
-        )
-        product = db.scalars(statement).one_or_none()
+            products_by_id = {
+                product.id: product
+                for product in products
+            }
 
-        if product is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Order's product not found",
-            )
+            if len(products_by_id) != len(set(product_ids)):
+                raise HTTPException(
+                    status_code=409,
+                    detail="An order product is missing",
+                )
 
-        product.stock += order.quantity
+            for item in order.items:
+                product = products_by_id[item.product_id]
+                product.stock += item.quantity
 
-        db.delete(order)
+            order.status = "cancelled"
+            order.cancelled_at = datetime.now(timezone.utc)
+
+        db.flush()
+
+        result = OrderResponse.model_validate(order)
+
         db.commit()
+
     except Exception:
         db.rollback()
         raise
 
-    return {
-        "message": "Order cancelled and stock restored",
-    }
+    return OrderResult(
+        message="Order is cancelled",
+        order=result,
+    )

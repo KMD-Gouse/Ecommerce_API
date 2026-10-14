@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import require_admin
-from app.models import Order, Product,Category
+from app.models import Category, OrderItem, Product
 from app.schemas.products import (
     CreateProduct,
     ResponseProduct,
