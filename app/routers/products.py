@@ -13,6 +13,10 @@ from app.schemas.products import (
     ResponseProduct,
     UpdateProduct,
 )
+from decimal import Decimal
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 
 router = APIRouter(
@@ -61,12 +65,85 @@ def create_product(
     }
 
 
-# READ ALL — public
+# READ ALL — public, with optional search and filters
 @router.get("", response_model=list[ResponseProduct])
 def get_products(
     db: Annotated[Session, Depends(get_db)],
+    search: Annotated[
+        str | None,
+        Query(min_length=1, max_length=100),
+    ] = None,
+    category_id: Annotated[
+        int | None,
+        Query(gt=0),
+    ] = None,
+    min_price: Annotated[
+        Decimal | None,
+        Query(ge=0),
+    ] = None,
+    max_price: Annotated[
+        Decimal | None,
+        Query(ge=0),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(ge=1, le=100),
+    ] = 20,
+    offset: Annotated[
+        int,
+        Query(ge=0),
+    ] = 0,
 ):
-    statement = select(Product).order_by(Product.id)
+    statement = select(Product)
+
+    if search is not None:
+        search = search.strip()
+
+        if not search:
+            raise HTTPException(
+                status_code=422,
+                detail="Search cannot be blank",
+            )
+
+        statement = statement.where(
+            Product.name.icontains(
+                search,
+                autoescape=True,
+            )
+        )
+
+    if category_id is not None:
+        statement = statement.where(
+            Product.category_id == category_id
+        )
+
+    if min_price is not None:
+        statement = statement.where(
+            Product.price >= min_price
+        )
+
+    if max_price is not None:
+        statement = statement.where(
+            Product.price <= max_price
+        )
+
+    if (
+        min_price is not None
+        and max_price is not None
+        and min_price > max_price
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="min_price cannot exceed max_price",
+        )
+
+    statement = (
+        statement
+        .order_by(Product.id)
+        .offset(offset)
+        .limit(limit)
+    )
+
     products = db.scalars(statement).all()
 
     return [
@@ -79,7 +156,6 @@ def get_products(
         }
         for product in products
     ]
-
 
 # READ ONE — public
 @router.get("/{product_id}", response_model=ResponseProduct)

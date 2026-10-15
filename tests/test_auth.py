@@ -15,7 +15,15 @@ def register_user(client):
 
     assert response.status_code == 201, response.text
 
-    return response.json()
+  
+    data = response.json()
+
+    assert "id" in data, (
+    f"Registration response is missing 'id': {data}"
+)
+
+    return data
+
 
 
 def test_login_returns_valid_token(client):
