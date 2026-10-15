@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from app.models import Category, OrderItem, Product
 
 from app.database import get_db
 from app.dependencies import require_admin
@@ -175,6 +176,7 @@ def update_product(
 
 
 # DELETE — admin only
+
 @router.delete(
     "/{product_id}",
     dependencies=[Depends(require_admin)],
@@ -183,10 +185,7 @@ def delete_product(
     product_id: Annotated[int, Path(gt=0)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    statement = select(Product).where(
-        Product.id == product_id
-    )
-    product = db.scalars(statement).one_or_none()
+    product = db.get(Product, product_id)
 
     if product is None:
         raise HTTPException(
@@ -194,16 +193,16 @@ def delete_product(
             detail="Product not found",
         )
 
-    existing_order_id = db.scalar(
-        select(Order.id)
-        .where(Order.product_id == product_id)
+    existing_order_item_id = db.scalar(
+        select(OrderItem.id)
+        .where(OrderItem.product_id == product_id)
         .limit(1)
     )
 
-    if existing_order_id is not None:
+    if existing_order_item_id is not None:
         raise HTTPException(
             status_code=409,
-            detail="Cannot delete a product with existing orders",
+            detail="Cannot delete a product with order history",
         )
 
     db.delete(product)

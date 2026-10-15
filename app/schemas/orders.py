@@ -3,6 +3,8 @@ from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from datetime import datetime, timezone
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CreateOrderItem(BaseModel):
@@ -41,6 +43,24 @@ class OrderResponse(BaseModel):
     cancelled_at: datetime | None
     items: list[OrderItemResponse]
 
+    @field_validator(
+        "created_at",
+        "cancelled_at",
+        mode="after",
+    )
+    @classmethod
+    def normalize_timestamp(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is None:
+            return None
+
+        if value.tzinfo is None:
+            # Our SQLite test database stores these timestamps as UTC.
+            return value.replace(tzinfo=timezone.utc)
+
+        return value.astimezone(timezone.utc)
 
 class OrderResult(BaseModel):
     message: str
