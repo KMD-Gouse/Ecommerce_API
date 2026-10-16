@@ -1,7 +1,8 @@
 
 from fastapi import FastAPI
 
-from app.routers import orders, products, users,auth,categories
+
+from app.routers import auth, cart, categories, orders, products, users
 
 
 app = FastAPI(title="Mini E-Commerce API")
@@ -12,6 +13,7 @@ app.include_router(users.router)
 app.include_router(products.router)
 app.include_router(orders.router)
 app.include_router(categories.router)
+app.include_router(cart.router)
 
 @app.get("/")
 def home():

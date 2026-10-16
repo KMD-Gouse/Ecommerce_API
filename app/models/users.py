@@ -65,3 +65,9 @@ class User(Base):
         "Order",
         back_populates="user",
     )
+    cart = relationship(
+        "Cart",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )

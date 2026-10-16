@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from app.models import Category, OrderItem, Product
+from app.models import Category, OrderItem, Product,CartItem
 
 from app.database import get_db
 from app.dependencies import require_admin
@@ -252,7 +252,6 @@ def update_product(
 
 
 # DELETE — admin only
-
 @router.delete(
     "/{product_id}",
     dependencies=[Depends(require_admin)],
@@ -279,6 +278,18 @@ def delete_product(
         raise HTTPException(
             status_code=409,
             detail="Cannot delete a product with order history",
+        )
+
+    existing_cart_item_id = db.scalar(
+        select(CartItem.id)
+        .where(CartItem.product_id == product_id)
+        .limit(1)
+    )
+
+    if existing_cart_item_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete a product in a cart",
         )
 
     db.delete(product)
