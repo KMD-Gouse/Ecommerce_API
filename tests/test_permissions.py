@@ -32,7 +32,6 @@ def purchase(client, accounts):
     assert response.status_code == 201, response.text
     return response.json()['order'], product
 
-
 @pytest.mark.parametrize(
     "method,path,body",
     [
@@ -42,20 +41,25 @@ def purchase(client, accounts):
         ("delete", "/users/1", None),
         ("get", "/orders", None),
         ("get", "/orders/1", None),
-        (
-            "post",
-            "/orders",
-            {
-                "items": [
-                    {"product_id": 1, "quantity": 1}
-                ]
-            },
-        ),
+        ("post", "/cart/checkout", None),
         ("post", "/orders/1/cancel", None),
     ],
 )
 def test_anonymous_access_denied(client, method, path, body):
-    assert client.request(method, path, json=body).status_code == 401
+    headers = (
+        {"Idempotency-Key": "anonymous-checkout-test"}
+        if path == "/cart/checkout"
+        else {}
+    )
+
+    response = client.request(
+        method,
+        path,
+        json=body,
+        headers=headers,
+    )
+
+    assert response.status_code == 401
 
 
 @pytest.mark.parametrize('method,body', [

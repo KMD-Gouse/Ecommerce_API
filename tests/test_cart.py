@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import select
 
-from app.models import Cart
+from app.models import Cart, Order
 
 
 @pytest.fixture
@@ -224,3 +224,145 @@ def test_cart_routes_require_login(client, method, path, body):
     )
 
     assert response.status_code == 401
+def test_checkout_creates_one_order_and_retry_returns_it(
+    client,
+    customer_headers,
+    cart_product,
+    session_factory,
+):
+    product_id = cart_product["id"]
+    headers = {
+        **customer_headers,
+        "Idempotency-Key": "checkout-test-001",
+    }
+
+    add_response = client.post(
+        "/cart/items",
+        headers=customer_headers,
+        json={"product_id": product_id, "quantity": 2},
+    )
+    assert add_response.status_code == 201, add_response.text
+
+    first = client.post("/cart/checkout", headers=headers)
+    assert first.status_code == 201, first.text
+
+    order = first.json()["order"]
+    assert order["total_amount"] == "1000.00"
+    assert order["items"][0]["quantity"] == 2
+    assert order["items"][0]["unit_price"] == "500.00"
+
+    assert client.get(
+        "/cart",
+        headers=customer_headers,
+    ).json()["items"] == []
+
+    assert client.get(
+        f"/products/{product_id}"
+    ).json()["stock"] == 3
+
+    # Simulate a client retrying because it missed the first response.
+    retry = client.post("/cart/checkout", headers=headers)
+    assert retry.status_code == 201, retry.text
+    assert retry.json()["order"]["id"] == order["id"]
+
+    assert client.get(
+        f"/products/{product_id}"
+    ).json()["stock"] == 3
+
+    with session_factory() as db:
+        assert len(db.scalars(select(Order)).all()) == 1
+
+
+def test_checkout_key_cannot_be_reused_for_changed_cart(
+    client,
+    customer_headers,
+    cart_product,
+):
+    product_id = cart_product["id"]
+    first_headers = {
+        **customer_headers,
+        "Idempotency-Key": "checkout-test-002",
+    }
+
+    client.post(
+        "/cart/items",
+        headers=customer_headers,
+        json={"product_id": product_id, "quantity": 2},
+    )
+    first = client.post("/cart/checkout", headers=first_headers)
+    assert first.status_code == 201, first.text
+
+    # Put a different quantity in the cart.
+    add_response = client.post(
+        "/cart/items",
+        headers=customer_headers,
+        json={"product_id": product_id, "quantity": 1},
+    )
+    assert add_response.status_code == 201, add_response.text
+
+    reused = client.post("/cart/checkout", headers=first_headers)
+    assert reused.status_code == 409, reused.text
+    assert client.get(
+        f"/products/{product_id}"
+    ).json()["stock"] == 3
+
+    # A new purchase needs a new key.
+    second = client.post(
+        "/cart/checkout",
+        headers={
+            **customer_headers,
+            "Idempotency-Key": "checkout-test-003",
+        },
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["order"]["id"] != first.json()["order"]["id"]
+    assert client.get(
+        f"/products/{product_id}"
+    ).json()["stock"] == 2
+
+
+def test_failed_checkout_keeps_cart_and_stock(
+    client,
+    customer_headers,
+    admin_headers,
+    cart_product,
+    session_factory,
+):
+    product_id = cart_product["id"]
+
+    add_response = client.post(
+        "/cart/items",
+        headers=customer_headers,
+        json={"product_id": product_id, "quantity": 2},
+    )
+    assert add_response.status_code == 201, add_response.text
+
+    # Stock changed after the customer added the item.
+    updated = client.patch(
+        f"/products/{product_id}",
+        headers=admin_headers,
+        json={"stock": 1},
+    )
+    assert updated.status_code == 200, updated.text
+
+    checkout = client.post(
+        "/cart/checkout",
+        headers={
+            **customer_headers,
+            "Idempotency-Key": "checkout-test-004",
+        },
+    )
+    assert checkout.status_code == 409, checkout.text
+
+    cart = client.get(
+        "/cart",
+        headers=customer_headers,
+    ).json()
+    assert cart["items"][0]["quantity"] == 2
+
+    assert client.get(
+        f"/products/{product_id}"
+    ).json()["stock"] == 1
+
+    with session_factory() as db:
+        assert db.scalars(select(Order)).all() == []

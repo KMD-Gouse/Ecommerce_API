@@ -63,10 +63,6 @@ def test_negative_stock_is_rejected(client, admin_headers):
     assert response.status_code == 422, response.text
 
 
-
-    assert response.status_code == 422, response.text
-
-
 # 3. A nonexistent product should return 404.
 
 def test_missing_product_returns_404(client):
@@ -95,6 +91,24 @@ def test_duplicate_email_returns_409(client, admin_headers):
 
     assert users_response.status_code == 200
     assert len(users_response.json()) == 2
+
+
+def test_home_endpoint(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.json() == {"message": "E-Commerce API"}
+
+
+def test_health_check_endpoint(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_about_endpoint(client):
+    response = client.get("/about")
+    assert response.status_code == 200
+    assert response.json() == {"project": "Mini E-Commerce API"}
 
 
 

@@ -69,22 +69,30 @@ def catalogue(client, admin_headers):
 def placed_order(client, customer_headers, catalogue):
     keyboard, mouse = catalogue
 
+    for product, quantity in (
+        (keyboard, 1),
+        (mouse, 2),
+    ):
+        response = client.post(
+            "/cart/items",
+            headers=customer_headers,
+            json={
+                "product_id": product["id"],
+                "quantity": quantity,
+            },
+        )
+        assert response.status_code == 201, response.text
+
     response = client.post(
-        "/orders",
-        headers=customer_headers,
-        json={
-            "items": [
-                {"product_id": keyboard["id"], "quantity": 1},
-                {"product_id": mouse["id"], "quantity": 2},
-            ]
+        "/cart/checkout",
+        headers={
+            **customer_headers,
+            "Idempotency-Key": "placed-order-fixture",
         },
     )
 
     assert response.status_code == 201, response.text
-
     return response.json()["order"]
-
-
 @pytest.fixture
 def other_customer_headers(client):
     response = client.post(
@@ -194,45 +202,14 @@ def test_product_price_change_preserves_order_price(
     assert Decimal(saved_order["total_amount"]) == Decimal("2500.00")
 
 
-@pytest.mark.parametrize("failure", ["insufficient", "missing"])
-def test_invalid_purchase_leaves_database_unchanged(
-    client,
-    customer_headers,
-    catalogue,
-    session_factory,
-    failure,
-):
-    keyboard, mouse = catalogue
-    before = database_state(session_factory)
 
-    second_item = (
-        {"product_id": mouse["id"], "quantity": 11}
-        if failure == "insufficient"
-        else {"product_id": 999999, "quantity": 1}
-    )
-
-    response = client.post(
-        "/orders",
-        headers=customer_headers,
-        json={
-            "items": [
-                {"product_id": keyboard["id"], "quantity": 1},
-                second_item,
-            ]
-        },
-    )
-
-    expected_status = 409 if failure == "insufficient" else 404
-
-    assert response.status_code == expected_status
-    assert database_state(session_factory) == before
 
 
 @pytest.mark.parametrize(
     "invalid_case",
-    ["empty", "duplicate", "zero_quantity", "client_price", "client_owner"],
+    ["zero_quantity", "client_price", "client_owner"],
 )
-def test_invalid_order_requests_are_rejected(
+def test_invalid_cart_item_requests_are_rejected(
     client,
     customer_headers,
     catalogue,
@@ -241,33 +218,49 @@ def test_invalid_order_requests_are_rejected(
 ):
     keyboard, _ = catalogue
 
-    item = {
+    body = {
         "product_id": keyboard["id"],
         "quantity": 1,
     }
 
-    body = {"items": [item]}
-
-    if invalid_case == "empty":
-        body = {"items": []}
-    elif invalid_case == "duplicate":
-        body = {"items": [item, item.copy()]}
-    elif invalid_case == "zero_quantity":
-        item["quantity"] = 0
+    if invalid_case == "zero_quantity":
+        body["quantity"] = 0
     elif invalid_case == "client_price":
-        item["unit_price"] = "1.00"
-    elif invalid_case == "client_owner":
+        body["unit_price"] = "1.00"
+    else:
         body["user_id"] = 999
 
     before = database_state(session_factory)
 
     response = client.post(
-        "/orders",
+        "/cart/items",
         headers=customer_headers,
         json=body,
     )
 
     assert response.status_code == 422, response.text
+    assert database_state(session_factory) == before
+
+    cart = client.get("/cart", headers=customer_headers).json()
+    assert cart["items"] == []
+
+
+def test_empty_cart_cannot_checkout(
+    client,
+    customer_headers,
+    session_factory,
+):
+    before = database_state(session_factory)
+
+    response = client.post(
+        "/cart/checkout",
+        headers={
+            **customer_headers,
+            "Idempotency-Key": "empty-cart-test",
+        },
+    )
+
+    assert response.status_code == 409, response.text
     assert database_state(session_factory) == before
 
 
@@ -421,11 +414,20 @@ def test_commit_failure_rolls_back_order_and_stock(
     monkeypatch,
     operation,
 ):
+    if operation == "create":
+        added = client.post(
+            "/cart/items",
+            headers=customer_headers,
+            json={
+                "product_id": catalogue[0]["id"],
+                "quantity": 1,
+            },
+        )
+        assert added.status_code == 201, added.text
+
     before = database_state(session_factory)
-    keyboard, _ = catalogue
 
     def fail_commit(session):
-        # Send changes to the database before simulating failure.
         session.flush()
         raise SQLAlchemyError("Simulated commit failure")
 
@@ -438,15 +440,10 @@ def test_commit_failure_rolls_back_order_and_stock(
         ):
             if operation == "create":
                 client.post(
-                    "/orders",
-                    headers=customer_headers,
-                    json={
-                        "items": [
-                            {
-                                "product_id": keyboard["id"],
-                                "quantity": 1,
-                            }
-                        ]
+                    "/cart/checkout",
+                    headers={
+                        **customer_headers,
+                        "Idempotency-Key": "commit-failure-test",
                     },
                 )
             else:
@@ -456,6 +453,13 @@ def test_commit_failure_rolls_back_order_and_stock(
                 )
 
     assert database_state(session_factory) == before
+
+    if operation == "create":
+        cart = client.get(
+            "/cart",
+            headers=customer_headers,
+        ).json()
+        assert cart["items"][0]["quantity"] == 1
 
 
 def test_inactive_customer_cannot_access_or_cancel_orders(

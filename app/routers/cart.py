@@ -15,6 +15,13 @@ from app.schemas.cart import (
     CartResponse,
     UpdateCartItem,
 )
+import hashlib
+import json
+
+from fastapi import Header
+
+from app.models import Order, OrderItem
+from app.schemas.orders import OrderResponse, OrderResult
 
 
 router = APIRouter(
@@ -281,3 +288,179 @@ def remove_item(
         raise
 
     return result
+def cart_fingerprint(items: list[CartItem]) -> str:
+    """Give the cart contents a stable identifier, regardless of item order."""
+    contents = sorted(
+        (item.product_id, item.quantity)
+        for item in items
+    )
+
+    encoded = json.dumps(
+        contents,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@router.post(
+    "/checkout",
+    response_model=OrderResult,
+    status_code=201,
+)
+def checkout_cart(
+    idempotency_key: Annotated[
+        str,
+        Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=128,
+        ),
+    ],
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    key = idempotency_key.strip()
+
+    if not key:
+        raise HTTPException(
+            status_code=422,
+            detail="Idempotency-Key cannot be blank",
+        )
+
+    try:
+        # Cart operations in this project also lock this row.
+        # A second checkout for this cart waits for the first to finish.
+        cart = find_my_cart(
+            db,
+            current_user.id,
+            lock=True,
+        )
+
+        # Check this AFTER acquiring the cart lock. A checkout that
+        # was in progress may have committed while we waited.
+        existing_order = db.scalar(
+            select(Order)
+            .where(
+                Order.user_id == current_user.id,
+                Order.idempotency_key == key,
+            )
+            .options(selectinload(Order.items))
+        )
+
+        if existing_order is not None:
+            if (
+                cart is not None
+                and cart.items
+                and cart_fingerprint(cart.items)
+                != existing_order.checkout_fingerprint
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency-Key was used for a different cart",
+                )
+
+            result = OrderResponse.model_validate(existing_order)
+            db.rollback()  # Release the cart lock; nothing was changed.
+
+            return OrderResult(
+                message="Order already created",
+                order=result,
+            )
+
+        if cart is None or not cart.items:
+            raise HTTPException(
+                status_code=409,
+                detail="Cart is empty",
+            )
+
+        if len(cart.items) > 100:
+            raise HTTPException(
+                status_code=422,
+                detail="Cart cannot contain more than 100 products",
+            )
+
+        fingerprint = cart_fingerprint(cart.items)
+
+        product_ids = [
+            item.product_id
+            for item in cart.items
+        ]
+
+        # Lock product rows in a consistent order before checking stock.
+        statement = (
+            select(Product)
+            .where(Product.id.in_(product_ids))
+            .order_by(Product.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+        products = db.scalars(statement).all()
+        products_by_id = {
+            product.id: product
+            for product in products
+        }
+
+        # Validate all items before changing any stock.
+        for item in cart.items:
+            product = products_by_id.get(item.product_id)
+
+            if product is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Product {item.product_id} is unavailable",
+                )
+
+            if product.stock < item.quantity:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Not enough stock for product {product.id}",
+                )
+
+        total_amount = sum(
+            (
+                products_by_id[item.product_id].price * item.quantity
+                for item in cart.items
+            ),
+            Decimal("0.00"),
+        )
+
+        order = Order(
+            user_id=current_user.id,
+            status="placed",
+            total_amount=total_amount,
+            idempotency_key=key,
+            checkout_fingerprint=fingerprint,
+        )
+
+        for item in cart.items:
+            product = products_by_id[item.product_id]
+
+            order.items.append(
+                OrderItem(
+                    product_id=product.id,
+                    quantity=item.quantity,
+                    unit_price=product.price,
+                )
+            )
+
+            product.stock -= item.quantity
+
+        db.add(order)
+
+        # CartItem has delete-orphan configured in your model.
+        cart.items.clear()
+
+        db.flush()
+        result = OrderResponse.model_validate(order)
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        raise
+
+    return OrderResult(
+        message="Order created successfully",
+        order=result,
+    )
