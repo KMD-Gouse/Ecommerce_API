@@ -11,6 +11,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import UniqueConstraint
 
 from app.database import Base
 
@@ -34,6 +35,19 @@ class Order(Base):
             (status = 'cancelled' AND cancelled_at IS NOT NULL)
             """,
             name="ck_orders_cancellation_consistent",
+        ),
+                UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_orders_user_idempotency_key",
+        ),
+        CheckConstraint(
+            """
+            (idempotency_key IS NULL AND checkout_fingerprint IS NULL)
+            OR
+            (idempotency_key IS NOT NULL AND checkout_fingerprint IS NOT NULL)
+            """,
+            name="ck_orders_checkout_fields_together",
         ),
     )
 
@@ -78,4 +92,13 @@ class Order(Base):
         "OrderItem",
         back_populates="order",
         order_by="OrderItem.id",
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+
+    checkout_fingerprint: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
     )
